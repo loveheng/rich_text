@@ -105,6 +105,18 @@ class InlineHighlight extends InlineNode {
   final List<InlineNode> children;
 }
 
+/// 行内数学（`$...$`，LaTeX 源码原样存储，内部标记不递归解析；渲染由消费端负责）。
+///
+/// [source] = 定界符内裸 LaTeX（不含 `$`），与 [InlineCode] 同口径；序列化回
+/// `$source$`、行内纯文本取 [source]（[inlineToPlain] / [inlineSpansOf] 严格镜像，
+/// 单测锁死）。行内数学是「提取器」叶子节点（镜像 `_extractCode`），与 `_inlinePattern`
+/// 的递归标记互不重叠。
+class InlineMath extends InlineNode {
+  const InlineMath(this.source);
+
+  final String source;
+}
+
 // ---------- 块级 ----------
 
 /// 块节点。
@@ -213,6 +225,16 @@ class VideoBlock extends RichBlock {
   final String label;
 }
 
+/// 块级数学公式（`$$...$$`，可跨多行；LaTeX 源码原样存储，渲染由消费端负责）。
+///
+/// [source] = 开闭 `$$` 之间内容（可能含换行），序列化回 `$$source$$`；无闭合时
+/// 解析层降级为段落（[降级铁律]：不丢内容）。
+class MathBlock extends RichBlock {
+  const MathBlock(this.source);
+
+  final String source;
+}
+
 // ---------- 媒体 url 后缀分类 ----------
 
 /// 媒体 url 后缀归类（rich-text-media.md §2 白名单两档）。
@@ -273,6 +295,7 @@ String inlineToPlain(List<InlineNode> nodes) => nodes
         InlineLink(:final label) => label,
         InlineStrikethrough(:final children) => inlineToPlain(children),
         InlineHighlight(:final children) => inlineToPlain(children),
+        InlineMath(:final source) => source,
       },
     )
     .join();
@@ -290,6 +313,7 @@ String blockToPlain(RichBlock block) => switch (block) {
   ImageBlock(:final alt) => alt.isEmpty ? '[图片]' : '[图片: $alt]',
   AudioBlock(:final label) => label.isEmpty ? '[音频]' : '[音频: $label]',
   VideoBlock(:final label) => label.isEmpty ? '[视频]' : '[视频: $label]',
+  MathBlock(:final source) => source,
   TableBlock(:final header, :final rows) => [
     ...header,
     for (final r in rows) ...r,
@@ -307,6 +331,7 @@ enum InlineMark {
   link,
   strikethrough,
   highlight,
+  math,
 }
 
 /// 一个样式 run：**纯文本坐标** [start, end)（标记字符已剥除）。
@@ -506,6 +531,7 @@ List<InlineNode> inlineNodesOf(String plain, List<InlineRun> runs) {
         InlineMark.link => InlineLink(label: text, url: url ?? ''),
         InlineMark.strikethrough => InlineStrikethrough([n]),
         InlineMark.highlight => InlineHighlight([n]),
+        InlineMark.math => InlineMath(text),
       };
     }
     return n;
@@ -529,7 +555,7 @@ List<InlineNode> inlineNodesOf(String plain, List<InlineRun> runs) {
 }
 
 // ---------- 序列化 ----------/// 行内纯文本需转义的字符：`\` 本身与子集语法标记（`*` `_` `[` `` ` ``）。
-final RegExp _escapeInlineRe = RegExp(r'[\\*_[`]');
+final RegExp _escapeInlineRe = RegExp(r'[\\*_[`$]');
 
 String _escapeText(String s) =>
     s.replaceAllMapped(_escapeInlineRe, (m) => '\\${m[0]}');
@@ -550,6 +576,7 @@ String serializeInline(List<InlineNode> nodes) => nodes
         InlineStrikethrough(:final children) =>
           '~~${serializeInline(children)}~~',
         InlineHighlight(:final children) => '==${serializeInline(children)}==',
+        InlineMath(:final source) => '\$$source\$',
       },
     )
     .join();
@@ -591,6 +618,7 @@ String serializeBlock(RichBlock block) => switch (block) {
   ImageBlock(:final url, :final alt) => '![${_escapeText(alt)}]($url)',
   AudioBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
   VideoBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
+  MathBlock(:final source) => '\$\$$source\$\$',
   TableBlock(:final header, :final rows, :final align) => _serializeTable(
     header,
     rows,

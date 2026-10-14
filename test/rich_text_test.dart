@@ -44,4 +44,47 @@ void main() {
     expect(para.inline.whereType<InlineCode>().single.code, 'code');
     expect(para.inline.whereType<InlineLink>().single.url, 'https://x.y');
   });
+
+  test(r'行内数学 $...$ 解析为 InlineMath（内部标记不递归）', () {
+    final blocks = parser.parse(r'公式 $E=mc^2$ 重要');
+    final para = blocks.single as ParagraphBlock;
+    final math = para.inline.whereType<InlineMath>().single;
+    expect(math.source, 'E=mc^2');
+    // 行内纯文本取裸源码（无 $ 定界符）
+    expect(inlineToPlain(para.inline), '公式 E=mc^2 重要');
+  });
+
+  test(r'块级数学 $$...$$（可跨行）解析为 MathBlock', () {
+    final md = '\$\$\n\\int_0^1 x^2\\,dx\n\$\$';
+    final blocks = parser.parse(md);
+    final math = blocks.single as MathBlock;
+    expect(math.source, '\n\\int_0^1 x^2\\,dx\n');
+  });
+
+  test('数学 serialize 往返幂等', () {
+    final inline = r'公式 $E=mc^2$ 重要';
+    expect(serializeBlocks(parser.parse(inline)), inline);
+    final block = '\$\$\n\\int x\n\$\$';
+    expect(serializeBlocks(parser.parse(block)), block);
+  });
+
+  test(r'货币 $ 与转义 \$ 不被误判为数学', () {
+    final md = r'售价 \$5 与 5\$x 测试';
+    final blocks = parser.parse(md);
+    final all = [
+      for (final b in blocks)
+        if (b is ParagraphBlock) ...b.inline,
+    ];
+    expect(all.whereType<InlineMath>(), isEmpty);
+    // 字面 $ 经转义保往返
+    expect(serializeBlocks(blocks), contains(r'\$'));
+  });
+
+  test('inlineSpansOf 与 inlineToPlain 逐字符一致（数学场景）', () {
+    final src = r'公式 $E=mc^2$ 与 `code`';
+    final spans = inlineSpansOf(src);
+    final plain = inlineToPlain(parser.parseInline(src));
+    expect(spans.plain, plain);
+    expect(spans.runs.where((r) => r.mark == InlineMark.math), isNotEmpty);
+  });
 }

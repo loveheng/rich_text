@@ -30,8 +30,8 @@ Set<String> lostMediaUrls(String originalMd, String incomingMd) {
 }
 
 /// 检测子集外、会被解析器降级为段落的 GFM 语法（仅取低误报信号）：
-/// 块级数学式 `$$…$$`、行内 HTML 标签 `<…>`（跳过敏感代码围栏）。
-/// 命中即说明有内容会被「降级」而非「丢字」——用于 R1 告知 AI。
+/// 行内 HTML 标签 `<…>`（跳过敏感代码围栏）。数学式 `$$…$$`/`$…$` 已是一等公民，
+/// 不再判为不支持。命中即说明有内容会被「降级」而非「丢字」——用于 R1 告知 AI。
 bool _hasUnsupportedGfm(String markdown) {
   final lines = markdown.split('\n');
   var inFence = false;
@@ -41,7 +41,6 @@ bool _hasUnsupportedGfm(String markdown) {
       continue;
     }
     if (inFence) continue;
-    if (line.contains(RegExp(r'\$\$'))) return true;
     // 排除 GFM 角括号自动链接 <https://…>/<mailto:…>，避免误报为不支持 HTML
     if (RegExp(r'<(?!https?://|mailto:)[a-zA-Z/!][^>\n]*>').hasMatch(line)) {
       return true;
@@ -107,7 +106,7 @@ AiNormalizeResult normalizeAiMarkdown(String markdown) {
   // 子集外结构降级告知（R1）
   if (_hasUnsupportedGfm(out)) {
     notes.add(
-      '检测到未支持的 GFM 语法（如数学式、HTML 标签），已降级为普通段落；'
+      '检测到未支持的 GFM 语法（如 HTML 标签），已降级为普通段落；'
       '建议改用纯文本、表格或列表等已支持格式',
     );
   }
@@ -192,12 +191,18 @@ InlineSpans inlineSpansOf(String source) {
   // 分支顺序与分组号与 parseInline 严格镜像（lesson：插分支必同步分组号）
   void walk(String text) {
     final codeSpans = MarkdownSubsetParser._extractCode(text);
+    final mathSpans = MarkdownSubsetParser._extractMath(text);
     final events = <_InlineEvent>[];
     for (final c in codeSpans) {
       events.add(_InlineEvent(c.$1, c.$2, code: c.$3));
     }
+    for (final m in mathSpans) {
+      if (codeSpans.any((c) => m.$1 < c.$2 && c.$1 < m.$2)) continue;
+      events.add(_InlineEvent(m.$1, m.$2, math: m.$3));
+    }
     for (final m in MarkdownSubsetParser._inlinePattern.allMatches(text)) {
       if (codeSpans.any((c) => m.start < c.$2 && c.$1 < m.end)) continue;
+      if (mathSpans.any((c) => m.start < c.$2 && c.$1 < m.end)) continue;
       events.add(_InlineEvent(m.start, m.end, match: m));
     }
     events.sort((a, b) => a.start.compareTo(b.start));
@@ -205,7 +210,11 @@ InlineSpans inlineSpansOf(String source) {
     var pos = 0;
     for (final ev in events) {
       if (ev.start > pos) emit(text.substring(pos, ev.start));
-      if (ev.code != null) {
+      if (ev.math != null) {
+        active.add(InlineMark.math);
+        emit(ev.math!);
+        active.remove(InlineMark.math);
+      } else if (ev.code != null) {
         active.add(InlineMark.code);
         emit(ev.code!);
         active.remove(InlineMark.code);
@@ -264,11 +273,12 @@ InlineSpans inlineSpansOf(String source) {
 /// 行内解析事件（[MarkdownSubsetParser.parseInline] / [inlineSpansOf] 共用）：
 /// 要么是一段行内码，要么是一处正则命中。
 class _InlineEvent {
-  const _InlineEvent(this.start, this.end, {this.code, this.match});
+  const _InlineEvent(this.start, this.end, {this.code, this.match, this.math});
   final int start;
   final int end;
   final String? code;
   final RegExpMatch? match;
+  final String? math;
 }
 
 /// Markdown 子集默认实现（纯函数，可单测）。
@@ -294,7 +304,7 @@ class MarkdownSubsetParser implements RichTextParser {
   /// 转义 → 自动链接 → 粗斜体 → 粗体 → 斜体 → 下划线 → 删除线 → 高亮 → 链接。
   /// 行内码（`code`）不在此正则内——走 [_extractCode] 预处理双扫描（防回溯）。
   static final RegExp _inlinePattern = RegExp(
-    r'\\([\\`*_\[])' // 1 转义：`\X` → 字面 X
+    r'\\([\\`*_\[$])' // 1 转义：`\X` → 字面 X（含 \$ → 字面 $）
     r'|(https?://[^\s<>()]+|www\.[^\s<>()]+|mailto:[^\s<>()]+)' // 2 自动链接（裸 url/www./mailto:）
     r'|(\*\*\*)(.+?)\*\*\*' // 3,4 粗斜体（插在粗体前，最长匹配优先）
     r'|(\*\*|__)(.+?)\5' // 5,6 粗体（\5 反向引用粗体定界符）
@@ -342,6 +352,77 @@ class MarkdownSubsetParser implements RichTextParser {
         j++;
       }
       if (!found) i = openStart + k;
+    }
+    return out;
+  }
+
+  /// 行内数学双扫描：定位行内 `$...$`（单行、内容不含 `$`、非 `$$` 块级），线性时间
+  /// 无回溯，镜像 [_extractCode]。边缘规则排除货币歧义（数学扩展约定）：
+  /// - 开口 `$` 前为数字（`5$x`）或后为空白/数字（` $x` / `$5`）→ 非数学；
+  /// - 闭合 `$` 前为空白（`$x $`）或后为数字（`$x$5`）→ 非数学；
+  /// - `\$` 转义与 `$$` 块级均跳过（块级由 [_MathBlockSyntax] 处理）；行内数学不跨行。
+  static List<(int, int, String)> _extractMath(String text) {
+    final out = <(int, int, String)>[];
+    var i = 0;
+    while (i < text.length) {
+      if (text[i] != '\$') {
+        i++;
+        continue;
+      }
+      // 转义 \$ 与块级 $$ 跳过
+      if (i > 0 && text[i - 1] == '\\') {
+        i++;
+        continue;
+      }
+      if (i + 1 < text.length && text[i + 1] == '\$') {
+        i += 2;
+        continue;
+      }
+      // 开口边缘规则：末尾 / 后为空白或数字 → 非数学
+      if (i + 1 >= text.length) {
+        i++;
+        continue;
+      }
+      final after = text[i + 1];
+      if (after == ' ' ||
+          after == '\t' ||
+          after == '\n' ||
+          RegExp(r'[0-9]').hasMatch(after)) {
+        i++;
+        continue;
+      }
+      // 开口前为数字 → 非数学（5$x）
+      if (i > 0 && RegExp(r'[0-9]').hasMatch(text[i - 1])) {
+        i++;
+        continue;
+      }
+      final openStart = i;
+      final innerStart = i + 1;
+      var j = innerStart;
+      var found = false;
+      while (j < text.length) {
+        final c = text[j];
+        if (c == '\n') break; // 行内数学不跨行
+        if (c == '\\') {
+          j += 2; // 跳过转义序列（如公式内 \$）
+          continue;
+        }
+        if (c == '\$') {
+          final beforeOk =
+              j > innerStart && text[j - 1] != ' ' && text[j - 1] != '\t';
+          final afterOk = j + 1 >= text.length ||
+              !RegExp(r'[0-9]').hasMatch(text[j + 1]);
+          if (beforeOk && afterOk) {
+            out.add((openStart, j + 1, text.substring(innerStart, j)));
+            i = j + 1;
+            found = true;
+            break;
+          }
+          break; // 闭合不满足边缘规则：放弃本处，避免吞掉后续合法公式
+        }
+        j++;
+      }
+      if (!found) i = openStart + 1;
     }
     return out;
   }
@@ -419,6 +500,7 @@ class MarkdownSubsetParser implements RichTextParser {
   static final List<_BlockSyntax> _syntaxes = [
     _FenceSyntax(),
     _DividerSyntax(),
+    _MathBlockSyntax(),
     _TableSyntax(),
     _HeadingSyntax(),
     _QuoteSyntax(),
@@ -476,7 +558,9 @@ class MarkdownSubsetParser implements RichTextParser {
       // 媒体链接行才算块起始（普通链接行仍并入段落，保持既有行为）
       (_linkLine.hasMatch(line) &&
           classifyMediaUrl(_linkLine.firstMatch(line)!.group(2)!) !=
-              MediaSuffix.unknown);
+              MediaSuffix.unknown) ||
+      // 块级数学 `$$...$$` 起始行也是块边界，否则会被段落/列表续行吞掉
+      line.trim().startsWith('\$\$');
 
   // ---- 表格（GFM 官方扩展，§3.6 ④）----
   /// 表格起始：当前行是表行（含 `|`）且下一行是分隔线（`:?-+:?` 由 `|` 分隔）。
@@ -555,16 +639,25 @@ class MarkdownSubsetParser implements RichTextParser {
     if (text.isEmpty) return const <InlineNode>[InlineText('')];
 
     final codeSpans = _extractCode(text);
+    final mathSpans = _extractMath(text);
     bool overlapsCode(int s, int e) =>
         codeSpans.any((c) => s < c.$2 && c.$1 < e);
+    bool overlapsMath(int s, int e) =>
+        mathSpans.any((c) => s < c.$2 && c.$1 < e);
 
-    // 事件化：行内码与正则命中按文档序排布，互不重叠（命中与码区间重叠则丢弃该命中）。
+    // 事件化：行内码、行内数学表达式、正则命中按文档序排布，互不重叠
+    //（命中与码/数学区间重叠则丢弃该命中，数学/码优先于普通标记）。
     final events = <_InlineEvent>[];
     for (final c in codeSpans) {
       events.add(_InlineEvent(c.$1, c.$2, code: c.$3));
     }
+    for (final m in mathSpans) {
+      if (overlapsCode(m.$1, m.$2)) continue;
+      events.add(_InlineEvent(m.$1, m.$2, math: m.$3));
+    }
     for (final m in _inlinePattern.allMatches(text)) {
       if (overlapsCode(m.start, m.end)) continue;
+      if (overlapsMath(m.start, m.end)) continue;
       events.add(_InlineEvent(m.start, m.end, match: m));
     }
     events.sort((a, b) => a.start.compareTo(b.start));
@@ -573,7 +666,9 @@ class MarkdownSubsetParser implements RichTextParser {
     var pos = 0;
     for (final ev in events) {
       if (ev.start > pos) out.add(InlineText(text.substring(pos, ev.start)));
-      if (ev.code != null) {
+      if (ev.math != null) {
+        out.add(InlineMath(ev.math!));
+      } else if (ev.code != null) {
         out.add(InlineCode(ev.code!));
       } else {
         out.add(_inlineNodeFromMatch(ev.match!));
@@ -832,6 +927,51 @@ class _MediaLinkSyntax implements _BlockSyntax {
       url: url,
       label: MarkdownSubsetParser._unescape(m.group(1)!),
     );
+  }
+}
+
+/// 块级数学公式：首行以 `$$` 起始，吃到闭合 `$$`（可跨多行），内部 LaTeX 原样
+/// 保留（含换行）。无闭合则降级段落，不丢内容（降级铁律）。
+class _MathBlockSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) => r.peek()!.trim().startsWith('\$\$');
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final first = r.advance();
+    // 首行形如 `$$x$$`（开闭同行的显示公式）立即闭合；裸 `$$` 仅作开头不闭合
+    if (first.trim() != '\$\$' && _mathHasClosing(first)) {
+      return _mathBlockOf([first]);
+    }
+    final buf = <String>[first];
+    while (!r.isDone) {
+      final line = r.advance();
+      buf.add(line);
+      if (_mathHasClosing(line)) break;
+    }
+    return _mathBlockOf(buf);
+  }
+
+  /// 单行是否含「闭合 `$$`」：`$$` 独立行，或行内 `$$…$$` 且闭合后仅空白。
+  static bool _mathHasClosing(String line) {
+    final t = line.trim();
+    if (t == '\$\$') return true;
+    final first = line.indexOf('\$\$');
+    if (first < 0) return false;
+    final close = line.indexOf('\$\$', first + 2);
+    if (close < 0) return false;
+    return line.substring(close + 2).trim().isEmpty;
+  }
+
+  /// buf 拼成文本后取开闭 `$$` 之间内容；无闭合降级段落（保留 `$$` 字面）。
+  static RichBlock _mathBlockOf(List<String> buf) {
+    final text = buf.join('\n');
+    final open = text.indexOf('\$\$');
+    final close = open >= 0 ? text.indexOf('\$\$', open + 2) : -1;
+    if (close < 0) {
+      return ParagraphBlock(MarkdownSubsetParser._parseInlineImpl(text));
+    }
+    return MathBlock(text.substring(open + 2, close));
   }
 }
 
