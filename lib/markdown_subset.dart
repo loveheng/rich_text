@@ -10,6 +10,10 @@ library;
 import 'rich_text.dart';
 export 'rich_text.dart';
 
+// 方案 B：块级解析委托给 Rust 原生核心（FFI）。R3 引用链接与 \r\n 归一化保留在 Dart 侧预处理。
+import 'src/ffi.dart';
+import 'src/ast_json.dart';
+
 /// AI 回写防冲刷护城河（2026-09-30 拍板叮嘱②，rich-text-media.md §7）：
 /// 对比原 md 与 AI 产出 md 的**行内媒体块 url 集合**，返回原文有而产出丢失的 url。
 /// 非空 = AI 润色/重构自作主张删掉了用户媒体资产，动作层必须拒绝整替（保留原文）。
@@ -483,7 +487,8 @@ class MarkdownSubsetParser implements RichTextParser {
     final resolved = refDefs.isEmpty
         ? body.join('\n')
         : _resolveRefLinks(body.join('\n'), refDefs);
-    return _parseBlocks(resolved.split('\n'));
+    // 块级解析委托给 Rust 核心（方案 B 单一事实源）；R3 引用链接与 \r\n 归一化已在上方处理。
+    return decodeBlocks(parseToJson(resolved));
   }
 
   /// R3：[label][id] → [label](url)；id 未定义则保留原串。

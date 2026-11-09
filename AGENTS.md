@@ -10,6 +10,6 @@
 
 ## 项目事实速查
 
-- 纯 Dart 3.13 共享包，`lib/rich_text.dart`(抽象) + `lib/markdown_subset.dart`(实现)；零运行时依赖、无 Flutter。
-- 工作流：`export PATH="$HOME/flutter/bin:$PATH"` 后 `dart pub get` / `dart analyze` / `dart test`。
-- 设计 SSOT 在 goodshare 仓 `docs/design/`；本仓 `docs/` 仅放评估类文档。
+- 纯 Rust 原生 SDK（方案 B）：`native/rich_text_core`（唯一事实源，零运行时依赖）+ `native/rich_text_uniffi`（UniFFI 绑定层，proc-macro 模式）。
+- 工作流：Rust 工具链；`cd native/rich_text_core && cargo test` / `cd native/rich_text_uniffi && cargo build`；`uniffi-bindgen generate --library <cdylib> --language <kotlin|swift>` 产出各端桩。
+- 设计 SSOT 在 goodshare 仓 `docs/design/`；本仓 `docs/` 仅放评估类文档；黄金语料在 `native/rich_text_core/tests/`。

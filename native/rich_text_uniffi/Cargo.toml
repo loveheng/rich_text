@@ -1,0 +1,16 @@
+[package]
+name = "rich_text_uniffi"
+version = "0.1.0"
+edition = "2021"
+description = "UniFFI binding layer for the rich_text native core (Plan B). Exposes the single Rust core to Kotlin/Swift/Dart."
+license = "MIT"
+
+[lib]
+# cdylib → 各端加载的共享库（Android .so / iOS .dylib / Dart FFI）；rlib 便于测试与下游组合。
+crate-type = ["cdylib", "staticlib", "rlib"]
+name = "rich_text_uniffi"
+
+[dependencies]
+rich_text_core = { path = "../rich_text_core", features = ["serde"] }
+uniffi = "0.27"
+serde_json = "1"

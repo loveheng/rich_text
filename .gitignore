@@ -1,1 +1,4 @@
 context/CURRENT
+
+# Rust 构建产物（原生 SDK）
+native/*/target/

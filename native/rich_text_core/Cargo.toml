@@ -1,0 +1,25 @@
+[package]
+name = "rich_text_core"
+version = "0.1.0"
+edition = "2021"
+description = "Single native core for the rich_text Markdown-subset SDK (Plan B). Pure Rust, zero runtime deps for the core logic."
+license = "MIT"
+
+[dependencies]
+# fancy-regex 支持回溯与反向引用（行内标记的 \5/\7 反向引用），与 Dart RegExp 语义对齐。
+fancy-regex = "0.13"
+
+# 可选：JSON 序列化（跨语言边界的 AST 序列化形态 + 黄金语料 / 绑定层）。
+# 必须开启 serde 的 `derive` feature，否则 serde::Serialize/Deserialize 派生宏不可用。
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+
+[features]
+# 启用后核心 AST 携带 serde 派生，并提供 blocks_to_json / blocks_from_json。
+serde = ["dep:serde", "dep:serde_json"]
+
+[lib]
+name = "rich_text_core"
+path = "src/lib.rs"

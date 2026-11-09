@@ -11,7 +11,7 @@ description: rich_text 的 docs/ 项目数据：域目录表、lint/收集脚本
 
 | 域 | 定位 | 文档 |
 |---|---|---|
-| eval（评估） | 架构/优化评估类文档（如增量解析评估） | `docs/incremental-parsing-eval.md` |
+| eval（评估） | 架构/优化评估类文档 | `docs/eval/`：incremental-parsing-eval.md、math-parsing-eval.md、native-rewrite-eval.md（`docs/incremental-parsing-eval.md` 为历史平铺遗留） |
 
 ## lint / 收集脚本
 
